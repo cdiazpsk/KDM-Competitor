@@ -1,0 +1,14 @@
+{
+  "name": "kdm-acquisition-intelligence",
+  "version": "1.0.0",
+  "private": true,
+  "description": "KDM acquisition universe builders (AWF series)",
+  "scripts": {
+    "awf1": "node scripts/awf1.js",
+    "awf2": "node scripts/awf2.js"
+  },
+  "dependencies": {
+    "ssh2-sftp-client": "^11.0.0",
+    "unzipper": "^0.12.3"
+  }
+}
