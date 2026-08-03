@@ -29,7 +29,16 @@ const LICENSE_CLASSES = ['CAC', 'CMC'];
 // Confirmed from real file rows: 60 = Palm Beach (Boynton Beach).
 // Fill the rest from a DISCOVERY=1 run, then commit.
 const COUNTY_CODE_MAP = {
-  // '60': { county: 'Palm Beach', region: 'SFL' },
+  // South Florida
+  '23': { county: 'Miami-Dade',  region: 'SFL' },  // 1,701
+  '16': { county: 'Broward',     region: 'SFL' },  // 1,267
+  '60': { county: 'Palm Beach',  region: 'SFL' },  //   962
+  // Central Florida
+  '58': { county: 'Orange',      region: 'CFL' },  //   597
+  '63': { county: 'Polk',        region: 'CFL' },  //   403
+  '69': { county: 'Seminole',    region: 'CFL' },  //   317
+  '45': { county: 'Lake',        region: 'CFL' },  //   244
+  '59': { county: 'Osceola',     region: 'CFL' }   //   202
 };
 
 // TRUE column layout, verified against real rows 2026-07-31.
