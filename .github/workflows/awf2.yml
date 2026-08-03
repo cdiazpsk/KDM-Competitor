@@ -1,0 +1,48 @@
+name: AWF-2 Sunbiz Corporate Enrichment
+
+on:
+  schedule:
+    # Quarterly, on the 5th of Jan/Apr/Jul/Oct at 10:00 UTC.
+    # Sunbiz generates quarterly files in those months; the 5th gives it room.
+    - cron: '0 10 5 1,4,7,10 *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'discovery'
+        type: choice
+        options:
+          - discovery
+          - dry_run
+          - live
+
+jobs:
+  enrich-sunbiz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Free up disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - run: npm ci --omit=dev || npm install --omit=dev
+
+      - name: Show mode
+        run: echo "mode=${{ github.event.inputs.mode || 'scheduled-live' }}"
+
+      - name: Run AWF-2
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DISCOVERY: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'discovery') && '1' || '0' }}
+          DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'dry_run') && '1' || '0' }}
+        run: node scripts/awf2.js
