@@ -34,7 +34,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           df -h /
 
-      - run: npm ci --omit=dev || npm install --omit=dev
+      - run: npm ci --omit=dev
 
       - name: Show mode
         run: echo "mode=${{ github.event.inputs.mode || 'scheduled-live' }}"
