@@ -1,0 +1,38 @@
+name: AWF-2b Sunbiz Corporate Events
+
+on:
+  schedule:
+    # Quarterly, day after AWF-2 so entities exist to match against.
+    - cron: '0 10 6 1,4,7,10 *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'discovery'
+        type: choice
+        options:
+          - discovery
+          - dry_run
+          - live
+
+jobs:
+  corporate-events:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --omit=dev
+      - name: Show mode
+        run: echo "mode=${{ github.event.inputs.mode || 'scheduled-live' }}"
+      - name: Run AWF-2b
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SFTP_DIR: ${{ vars.SFTP_DIR }}
+          DISCOVERY: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'discovery') && '1' || '0' }}
+          DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'dry_run') && '1' || '0' }}
+        run: node scripts/awf2b.js
