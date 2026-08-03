@@ -49,22 +49,48 @@ const LAYOUT = process.env.EVENT_LAYOUT ? JSON.parse(process.env.EVENT_LAYOUT) :
   eventDate: null
 };
 
-// Event text patterns. Matched case-insensitively against the whole record so
-// they work regardless of exact field position.
-const DISTRESS_PATTERNS = [
-  { re: /ADMIN(ISTRATIVE)?\s+DISSOLUTION/i, signal: 'admin_dissolution', strategies: [4, 10] },
-  { re: /DISSOLUTION\s+FOR\s+ANNUAL\s+REPORT/i, signal: 'admin_dissolution', strategies: [4, 10] },
-  { re: /REVO(KED|CATION)/i, signal: 'entity_revoked', strategies: [4, 10] },
-  { re: /DELINQUEN/i, signal: 'entity_delinquent', strategies: [4, 10] }
-];
-const BENIGN_PATTERNS = [
-  { re: /VOLUNTARY\s+DISSOLUTION/i, signal: 'voluntary_dissolution', strategies: [] },
-  { re: /WITHDRAWAL/i, signal: 'voluntary_withdrawal', strategies: [] },
-  { re: /MERGER/i, signal: 'entity_merged', strategies: [2] },
-  { re: /REINSTATE/i, signal: 'entity_reinstated', strategies: [] },
-  { re: /CONVER(SION|TED)/i, signal: 'entity_converted', strategies: [] },
-  { re: /NAME\s+CHANGE/i, signal: 'entity_name_change', strategies: [] }
-];
+// Event codes observed in the real file (positions 17-27). Classification is
+// by CODE, not free text — the codes are stable, the descriptions vary.
+// CRITICAL: the event file is a full lifecycle log going back decades. An
+// entity can be admin-dissolved in 1983 and reinstated in 1983 and be perfectly
+// healthy today (AMI Air Conditioning does exactly this twice). Only the LATEST
+// event per entity is used, and only when recent.
+const EVENT_CLASS = {
+  // ---- distress ----
+  CORAMADMAR: { signal: 'admin_dissolution',      strategies: [4, 10], distress: true },
+  CORAMREVAR: { signal: 'entity_revoked',          strategies: [4, 10], distress: true },
+  CORAMINVOL: { signal: 'involuntarily_dissolved', strategies: [4, 10], distress: true },
+  CORAMDSPRC: { signal: 'dissolved_proclamation',  strategies: [4, 10], distress: true },
+  CORAMCANNP: { signal: 'cancelled_nonpayment',    strategies: [4, 10], distress: true },
+  // ---- recovery: cancels a prior distress event ----
+  CORAPREIN:  { signal: 'entity_reinstated',       strategies: [], recovery: true },
+  CORAPREIWP: { signal: 'admin_diss_cancelled',    strategies: [], recovery: true },
+  CORAPREVDS: { signal: 'voluntary_diss_revoked',  strategies: [], recovery: true },
+  CORLCREVDS: { signal: 'voluntary_diss_revoked',  strategies: [], recovery: true },
+  // ---- benign / informational ----
+  CORAPVOLDS: { signal: 'voluntary_dissolution',   strategies: [] },
+  CORLCVOLDS: { signal: 'voluntary_dissolution',   strategies: [] },
+  CORAPVLDSI: { signal: 'voluntary_dissolution',   strategies: [] },
+  CORAPMER:   { signal: 'entity_merged',           strategies: [2] },
+  CORAPCONV:  { signal: 'entity_converted',        strategies: [] },
+  CORAPNC:    { signal: 'entity_name_change',      strategies: [] },
+  CORAPAMDNC: { signal: 'entity_name_change',      strategies: [] },
+  CORLCAMDNC: { signal: 'entity_name_change',      strategies: [] },
+  CORAPCORNC: { signal: 'entity_name_change',      strategies: [] }
+};
+
+// Positions verified against real records (662-char fixed width):
+const EV = {
+  documentNo: [0, 12],
+  sequence:   [12, 17],
+  eventCode:  [17, 27],
+  description:[27, 85],
+  eventDate:  [85, 93]
+};
+
+// A distress event only scores if it is the entity's most recent event AND
+// happened within this window. Older ones are history, not current condition.
+const DISTRESS_RECENCY_YEARS = 5;
 
 const CHUNK = 500;
 // ================================
@@ -231,60 +257,105 @@ async function main() {
     Object.entries(codeCensus).sort((a, b) => b[1] - a[1]).slice(0, 40)
       .forEach(([t, n]) => log(`  ${String(n).padStart(5)}  ${t}`));
 
-    log('\n===== PATTERN PREVIEW =====');
-    let distress = 0, benign = 0, unclassified = 0;
+    log('\n===== PATTERN PREVIEW (latest event per entity) =====');
+    const thisYear = new Date().getUTCFullYear();
+    let dCurrent = 0, dStale = 0, benign = 0, unclass = 0, recovered = 0;
+    const unknownCodes = {};
     for (const [, recs] of eventsByDoc) {
-      for (const r of recs) {
-        if (DISTRESS_PATTERNS.some(p => p.re.test(r))) distress++;
-        else if (BENIGN_PATTERNS.some(p => p.re.test(r))) benign++;
-        else unclassified++;
+      const parsed = recs.map(r => ({
+        seq: Number(r.slice(EV.sequence[0], EV.sequence[1]).trim()) || 0,
+        code: r.slice(EV.eventCode[0], EV.eventCode[1]).trim().toUpperCase(),
+        date: toISO(r.slice(EV.eventDate[0], EV.eventDate[1]).trim())
+      })).sort((a, b) => (a.seq - b.seq) || String(a.date).localeCompare(String(b.date)));
+      const latest = parsed[parsed.length - 1];
+      const cls = EVENT_CLASS[latest.code];
+      if (!cls) { unclass++; unknownCodes[latest.code] = (unknownCodes[latest.code] || 0) + 1; continue; }
+      if (cls.distress) {
+        const y = latest.date ? Number(latest.date.slice(0, 4)) : null;
+        if (y && thisYear - y <= DISTRESS_RECENCY_YEARS) dCurrent++; else dStale++;
+      } else {
+        benign++;
+        if (parsed.some(p => (EVENT_CLASS[p.code] || {}).distress)) recovered++;
       }
     }
-    log(`  distress-matching events:     ${distress}`);
-    log(`  benign-matching events:       ${benign}`);
-    log(`  unclassified events:          ${unclassified}`);
-    log('\nRead the census above. Add any distress wording not yet covered to');
-    log('DISTRESS_PATTERNS, then re-run with DRY_RUN=1.');
+    log(`  CURRENT distress (latest event, within ${DISTRESS_RECENCY_YEARS}yr): ${dCurrent}  <-- real targets`);
+    log(`  stale distress (latest event but old):                ${dStale}`);
+    log(`  benign latest event:                                  ${benign}`);
+    log(`    ...of which had distress earlier then recovered:    ${recovered}`);
+    log(`  unclassified latest-event codes:                      ${unclass}`);
+    if (Object.keys(unknownCodes).length) {
+      log('\n  Unclassified codes seen as a latest event:');
+      Object.entries(unknownCodes).sort((a, b) => b[1] - a[1]).slice(0, 20)
+        .forEach(([c, n]) => log(`    ${String(n).padStart(5)}  ${c}`));
+    }
+    log('\nAdd any missing distress codes to EVENT_CLASS, then run DRY_RUN=1.');
     return;
   }
 
-  // ---- Build signals ----
+  // ---- Build signals from the LATEST event per entity only ----
   const signals = [];
-  const seen = new Set();
+  const thisYear = new Date().getUTCFullYear();
+  let historicalDistressSuppressed = 0;
+  let staleDistressSuppressed = 0;
+
   for (const [doc, recs] of eventsByDoc) {
     const ent = byDoc.get(doc);
     if (!ent) continue;
-    for (const r of recs) {
-      const dates = findDates(r);
-      const eventDate = dates.length ? dates[dates.length - 1].iso : null;
-      const all = DISTRESS_PATTERNS.concat(BENIGN_PATTERNS);
-      for (const p of all) {
-        if (!p.re.test(r)) continue;
-        const k = `${doc}|${p.signal}|${eventDate || ''}`;
-        if (seen.has(k)) continue;
-        seen.add(k);
-        signals.push({
-          contractor_id: ent.contractor_id,
-          license_no: null,
-          signal_type: p.signal,
-          strategy_ids: p.strategies,
-          payload: {
-            document_no: doc,
-            entity_name: ent.entity_name,
-            event_date: eventDate,
-            event_text: r.slice(12).replace(/\s+/g, ' ').trim().slice(0, 120)
-          },
-          source: 'AWF-2b'
-        });
-        break; // one classification per record
+
+    // Order events by sequence number, then by date as a tiebreaker.
+    const parsed = recs.map(r => {
+      const seq = Number(r.slice(EV.sequence[0], EV.sequence[1]).trim()) || 0;
+      const code = r.slice(EV.eventCode[0], EV.eventCode[1]).trim().toUpperCase();
+      const desc = r.slice(EV.description[0], EV.description[1]).replace(/\s+/g, ' ').trim();
+      const date = toISO(r.slice(EV.eventDate[0], EV.eventDate[1]).trim());
+      return { seq, code, desc, date };
+    }).sort((a, b) => (a.seq - b.seq) || String(a.date).localeCompare(String(b.date)));
+
+    const latest = parsed[parsed.length - 1];
+    if (!latest) continue;
+    const cls = EVENT_CLASS[latest.code];
+    if (!cls) continue;
+
+    // A distress event only counts as current condition if it is the latest
+    // event and recent. Anything older is history: the entity was dissolved
+    // in 1985, reinstated, and has been trading ever since.
+    if (cls.distress) {
+      const evYear = latest.date ? Number(latest.date.slice(0, 4)) : null;
+      if (!evYear || thisYear - evYear > DISTRESS_RECENCY_YEARS) {
+        staleDistressSuppressed++;
+        continue;
       }
+    }
+
+    signals.push({
+      contractor_id: ent.contractor_id,
+      license_no: null,
+      signal_type: cls.signal,
+      strategy_ids: cls.strategies,
+      payload: {
+        document_no: doc,
+        entity_name: ent.entity_name,
+        event_code: latest.code,
+        event_description: latest.desc,
+        event_date: latest.date,
+        total_events_on_record: parsed.length
+      },
+      source: 'AWF-2b'
+    });
+
+    // Count how many entities had distress somewhere in their history but
+    // recovered afterwards; useful context, not a signal.
+    if (!cls.distress && parsed.some(p => (EVENT_CLASS[p.code] || {}).distress)) {
+      historicalDistressSuppressed++;
     }
   }
 
   const counts = {};
   signals.forEach(s => counts[s.signal_type] = (counts[s.signal_type] || 0) + 1);
-  log('\nSignals to write:');
+  log('\nSignals to write (latest event per entity only):');
   Object.entries(counts).sort((a, b) => b[1] - a[1]).forEach(([k, v]) => log(`    ${k}: ${v}`));
+  log(`\n  suppressed as stale distress (>${DISTRESS_RECENCY_YEARS}yr or undated): ${staleDistressSuppressed}`);
+  log(`  entities with distress in history but recovered since:  ${historicalDistressSuppressed}`);
 
   if (DRY_RUN) {
     log('\nDRY_RUN=1 -> nothing written.');
