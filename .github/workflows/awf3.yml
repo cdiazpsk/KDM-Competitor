@@ -1,0 +1,44 @@
+name: AWF-3 Web Footprint Scanner
+
+on:
+  schedule:
+    # Weekly rolling batch — processes the N contractors with the oldest
+    # last_enriched, so the full universe cycles through over several runs.
+    - cron: '0 11 * * 2'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'discovery'
+        type: choice
+        options:
+          - discovery
+          - dry_run
+          - live
+      batch_size:
+        description: 'Contractors to process (live/dry_run only)'
+        required: false
+        default: '300'
+
+jobs:
+  web-footprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --omit=dev
+      - name: Show mode
+        run: echo "mode=${{ github.event.inputs.mode || 'scheduled-live' }} batch=${{ github.event.inputs.batch_size || '300' }}"
+      - name: Run AWF-3
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '300' }}
+          DISCOVERY: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'discovery') && '1' || '0' }}
+          DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'dry_run') && '1' || '0' }}
+        run: node scripts/awf3.js
