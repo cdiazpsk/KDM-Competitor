@@ -30,7 +30,15 @@ const unzipper = require('unzipper');
 const SFTP_HOST = 'sftp.floridados.gov';
 const SFTP_USER = 'Public';
 const SFTP_PASS = 'PubAccess1845!';
-const SFTP_DIR = '/doc/quarterly/cor';
+// The published docs describe navigating "doc > quarterly > cor" from the
+// public directory, which is not necessarily the filesystem root. Candidates
+// are tried in order; override with the SFTP_DIR env var once the real path
+// is known (run scripts/sftp-explore.js to find it).
+const SFTP_DIR_CANDIDATES = process.env.SFTP_DIR
+  ? [process.env.SFTP_DIR]
+  : ['doc/quarterly/cor', '/doc/quarterly/cor', './doc/quarterly/cor',
+     '/Public/doc/quarterly/cor', 'Public/doc/quarterly/cor',
+     '/quarterly/cor', 'quarterly/cor'];
 const SFTP_FILE = 'cordata.zip';
 
 // Fixed-width layout, per the Division of Corporations file definition.
@@ -185,13 +193,25 @@ async function main() {
   const sftp = new SftpClient();
   log(`Connecting to ${SFTP_HOST}...`);
   await sftp.connect({ host: SFTP_HOST, port: 22, username: SFTP_USER, password: SFTP_PASS, readyTimeout: 60000 });
-  const listing = await sftp.list(SFTP_DIR);
-  log('Remote directory contents:');
-  listing.forEach(f => log(`  ${f.name}  ${(f.size / 1024 / 1024).toFixed(1)} MB  ${new Date(f.modifyTime).toISOString().slice(0, 10)}`));
-  const target = listing.find(f => f.name.toLowerCase() === SFTP_FILE.toLowerCase());
-  if (!target) throw new Error(`${SFTP_FILE} not found in ${SFTP_DIR}`);
+  let dir = null, listing = null, target = null;
+  for (const cand of SFTP_DIR_CANDIDATES) {
+    try {
+      const l = await sftp.list(cand);
+      const t = l.find(f => f.name.toLowerCase() === SFTP_FILE.toLowerCase());
+      log(`  ${cand} -> listed ${l.length} items${t ? ' (contains ' + SFTP_FILE + ')' : ''}`);
+      if (t) { dir = cand; listing = l; target = t; break; }
+    } catch (e) {
+      log(`  ${cand} -> ${e.message}`);
+    }
+  }
+  if (!target) {
+    await sftp.end();
+    throw new Error(`${SFTP_FILE} not found in any candidate directory. Run scripts/sftp-explore.js to locate it, then set the SFTP_DIR env var or edit SFTP_DIR_CANDIDATES.`);
+  }
+  log(`\nUsing directory: ${dir}`);
+  listing.forEach(f => log(`  ${f.name}  ${(f.size / 1024 / 1024).toFixed(1)} MB  ${f.modifyTime ? new Date(f.modifyTime).toISOString().slice(0, 10) : '?'}`));
   log(`Downloading ${SFTP_FILE} (${(target.size / 1024 / 1024).toFixed(1)} MB)...`);
-  await sftp.fastGet(`${SFTP_DIR}/${SFTP_FILE}`, tmpZip);
+  await sftp.fastGet(`${dir}/${SFTP_FILE}`.replace('//', '/'), tmpZip);
   await sftp.end();
   log('Download complete.');
 
