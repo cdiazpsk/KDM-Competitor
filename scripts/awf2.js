@@ -101,11 +101,15 @@ function surnameOf(name) {
   return parts.length > 1 ? parts[0] : s;
 }
 
-function toISO(yyyymmdd) {
-  const s = String(yyyymmdd || '').trim();
+function toISO(mmddyyyy) {
+  // Sunbiz date fields are MMDDYYYY (verified against real records 2026-08-03:
+  // "07112000" = July 11, 2000; "02132026" = Feb 13, 2026), NOT YYYYMMDD.
+  const s = String(mmddyyyy || '').trim();
   if (!/^\d{8}$/.test(s)) return null;
-  const y = s.slice(0, 4), m = s.slice(4, 6), d = s.slice(6, 8);
+  const m = s.slice(0, 2), d = s.slice(2, 4), y = s.slice(4, 8);
   if (y === '0000' || m === '00' || d === '00') return null;
+  const mi = Number(m), di = Number(d);
+  if (mi < 1 || mi > 12 || di < 1 || di > 31) return null;
   return `${y}-${m}-${d}`;
 }
 
