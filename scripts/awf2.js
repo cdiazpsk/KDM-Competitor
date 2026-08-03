@@ -36,7 +36,8 @@ const SFTP_PASS = 'PubAccess1845!';
 // is known (run scripts/sftp-explore.js to find it).
 const SFTP_DIR_CANDIDATES = process.env.SFTP_DIR
   ? [process.env.SFTP_DIR]
-  : ['doc/quarterly/cor', '/doc/quarterly/cor', './doc/quarterly/cor',
+  : ['doc/Quarterly/Cor', './doc/Quarterly/Cor',  // confirmed path, 2026-08-03
+     'doc/quarterly/cor', '/doc/quarterly/cor', './doc/quarterly/cor',
      '/Public/doc/quarterly/cor', 'Public/doc/quarterly/cor',
      '/quarterly/cor', 'quarterly/cor'];
 const SFTP_FILE = 'cordata.zip';
@@ -235,6 +236,7 @@ async function main() {
       const rec = rawLine.replace(/\r$/, '');
       if (!rec.trim()) continue;
       totalRecords++;
+      if (totalRecords % 500000 === 0) log(`    ...${totalRecords} records scanned, ${matchedEntities.length} matched so far`);
       if (rec.length < RECORD_LEN - 10) { shortRecords++; if (shortRecords <= 3) sampleRecords.push(rec.slice(0, 220)); continue; }
       const name = cut(rec, FIELD.entityName);
       const key = normalizeMatchKey(name);
