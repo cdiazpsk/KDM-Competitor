@@ -1,0 +1,36 @@
+name: AWF-1 Contractor Universe Build
+
+on:
+  schedule:
+    # 1st of each month, 09:30 UTC (5:30 AM ET / 4:30 AM EST)
+    - cron: '30 9 1 * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'discovery'
+        type: choice
+        options:
+          - discovery
+          - dry_run
+          - live
+
+jobs:
+  build-universe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run AWF-1
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DISCOVERY: ${{ github.event.inputs.mode == 'discovery' && '1' || '0' }}
+          DRY_RUN: ${{ github.event.inputs.mode == 'dry_run' && '1' || '0' }}
+        run: node scripts/awf1.js
