@@ -74,9 +74,26 @@ const EVENT_CLASS = {
   CORAPMER:   { signal: 'entity_merged',           strategies: [2] },
   CORAPCONV:  { signal: 'entity_converted',        strategies: [] },
   CORAPNC:    { signal: 'entity_name_change',      strategies: [] },
+  CORLCNC:    { signal: 'entity_name_change',      strategies: [] },
   CORAPAMDNC: { signal: 'entity_name_change',      strategies: [] },
   CORLCAMDNC: { signal: 'entity_name_change',      strategies: [] },
-  CORAPCORNC: { signal: 'entity_name_change',      strategies: [] }
+  CORAPCORNC: { signal: 'entity_name_change',      strategies: [] },
+  CORLCCORNC: { signal: 'entity_name_change',      strategies: [] },
+  // Routine filing maintenance — the single largest unclassified bucket
+  // (639 of 778 in discovery). No scoring value, but worth recording so the
+  // "unclassified" count stays a real signal of gaps, not noise.
+  CORAPAMND:  { signal: 'entity_amendment',        strategies: [] },
+  CORLCAMND:  { signal: 'entity_amendment',         strategies: [] },
+  CORAPAMNRS: { signal: 'entity_amendment',         strategies: [] },
+  CORAPARTCR: { signal: 'entity_amendment',         strategies: [] },
+  CORLCARTCR: { signal: 'entity_amendment',         strategies: [] },
+  CORAPRSTAR: { signal: 'entity_amendment',         strategies: [] },
+  CORAPWITH:  { signal: 'entity_withdrawal',        strategies: [] },
+  CORLCRACHG: { signal: 'registered_agent_change',  strategies: [] },
+  // A member leaving an LLC is a mild precursor worth watching, not distress
+  // on its own — feeds Succession Fatigue as a soft signal, no strategy weight
+  // strong enough to include it in the distress class.
+  CORLCDSMEM: { signal: 'llc_member_dissociation',  strategies: [1] }
 };
 
 // Positions verified against real records (662-char fixed width):
