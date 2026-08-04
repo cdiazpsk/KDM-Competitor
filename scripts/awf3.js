@@ -95,29 +95,29 @@ function tokens(name) {
 }
 
 // Overlap on the DISTINCTIVE tokens (proper nouns, surnames, invented brand
-// words) rather than raw Jaccard over everything. Two safeguards beyond plain
-// token-set overlap, both earned by real false cases in testing:
-//  1. A single shared short trade-adjacent word ("Breeze", "Star") is not
-//     enough evidence alone — require 2+ shared distinctive tokens, OR one
-//     shared token that's long enough to be a rare word/surname (7+ chars).
-//  2. Google listings sometimes join words Sunbiz/DBPR keep separate
-//     ("AirMasters" vs "Air Masters"). A token is also credited as a hit if
-//     it's a substring (4+ chars) of a token on the other side.
+// words) rather than raw Jaccard over everything. ALWAYS requires 2+ shared
+// distinctive tokens — no single-token exception, after two confirmed false
+// positives both traced to exactly that escape hatch: "R Palacios & Company"
+// matched a law firm on the surname "Palacios" alone (8 chars), and
+// "Reinaldo Horday A/C Inc" matched an unrelated doctor on the first name
+// "Reinaldo" alone (8 chars). A single name, however long or rare it looks,
+// is not reliable identity by itself — first names in particular are shared
+// across thousands of unrelated people. Google listings sometimes join words
+// Sunbiz/DBPR keep separate ("AirMasters" vs "Air Masters"); a token is also
+// credited as a hit if it's a substring (4+ chars) of a token on the other
+// side, which is what lets that legitimate case still match with 2 tokens.
 function nameMatchScore(a, b) {
   const ta = tokens(a), tb = tokens(b);
   if (!ta.length || !tb.length) return 0;
   const setB = new Set(tb);
   let hits = 0;
-  const hitTokens = [];
   for (const t of ta) {
-    if (setB.has(t)) { hits++; hitTokens.push(t); continue; }
+    if (setB.has(t)) { hits++; continue; }
     if (t.length >= 4 && tb.some(bt => bt.length >= 4 && (bt.includes(t) || t.includes(bt)))) {
-      hits++; hitTokens.push(t);
+      hits++;
     }
   }
-  if (hits === 0) return 0;
-  const strongEvidence = hits >= 2 || hitTokens.some(t => t.length >= 7);
-  if (!strongEvidence) return 0;
+  if (hits < 2) return 0;
   return hits / Math.max(ta.length, 1);
 }
 
@@ -144,6 +144,17 @@ function isBarePersonName(name) {
   const afterComma = m[2].trim().toUpperCase().replace(/\./g, '');
   const firstWordAfter = afterComma.split(/\s+/)[0];
   return !CORP_SUFFIX.has(firstWordAfter);
+}
+
+// DBPR uses "INDIVIDUAL" as a literal placeholder in the DBA field when an
+// individually-licensed person has no company name on file. It is not a real
+// business name and must never be searched: caught in production — 12
+// separate contractors all named "INDIVIDUAL" all matched to the same
+// unrelated website (a professional whose Google listing happened to contain
+// the generic word "individual"), because the placeholder itself was long
+// enough to clear the token-match bar. Same treatment as bare person names.
+function isPlaceholderName(name) {
+  return String(name || '').trim().toUpperCase() === 'INDIVIDUAL';
 }
 async function placesTextSearch(query) {
   const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
@@ -232,7 +243,7 @@ async function main() {
   let apiCalls = 0;
 
   for (const c of rows) {
-    if (isBarePersonName(c.entity_name)) {
+    if (isBarePersonName(c.entity_name) || isPlaceholderName(c.entity_name)) {
       results.push({ contractor: c, skipped: 'individual_name', matched: false });
       continue;
     }
