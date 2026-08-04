@@ -299,7 +299,15 @@ async function main() {
   }
 
   // ---- Build updates + signals ----
-  const updates = [];
+  // PostgREST rejects a batch insert whose objects don't all share the same
+  // keys (PGRST102) — and JSON.stringify silently drops keys set to
+  // `undefined`, so a mixed matched/unmatched batch fails. Splitting into two
+  // uniform-shape batches also protects correctness, not just the API call:
+  // an unmatched contractor on this rolling pass may have real website/review
+  // data from an earlier pass, and must never be overwritten with nulls just
+  // because this particular run didn't find a listing.
+  const matchedUpdates = [];
+  const touchedOnly = [];
   const signals = [];
   const counts = { matched: 0, unmatched: 0, no_website: 0, closed: 0, stale_reviews: 0, zero_reviews: 0, site_dead: 0 };
 
@@ -308,35 +316,32 @@ async function main() {
     if (r.error) continue;
 
     if (!r.matched) {
+      touchedOnly.push({ id: cid, last_enriched: new Date().toISOString() });
       if (r.skipped) {
-        // Intentionally not searched — do not write no_gbp_listing, which
-        // would misleadingly imply a search happened and found nothing.
-        updates.push({ id: cid, last_enriched: new Date().toISOString() });
         signals.push({
           contractor_id: cid, license_no: null, signal_type: 'individual_license_no_web_check',
           strategy_ids: [], source: 'AWF-3',
           payload: { reason: 'bare person name; name-only search unreliable' }
         });
-        continue;
+      } else {
+        counts.unmatched++;
+        signals.push({
+          contractor_id: cid, license_no: null, signal_type: 'no_gbp_listing',
+          strategy_ids: [1, 2, 4], source: 'AWF-3',
+          payload: { query: `${r.contractor.entity_name} ${r.contractor.city}` }
+        });
       }
-      counts.unmatched++;
-      updates.push({ id: cid, last_enriched: new Date().toISOString() });
-      signals.push({
-        contractor_id: cid, license_no: null, signal_type: 'no_gbp_listing',
-        strategy_ids: [1, 2, 4], source: 'AWF-3',
-        payload: { query: `${r.contractor.entity_name} ${r.contractor.city}` }
-      });
       continue;
     }
 
     counts.matched++;
-    updates.push({
+    matchedUpdates.push({
       id: cid,
-      website: r.website,
-      gbp_place_id: r.placeId,
-      phone: r.phone || undefined,
-      review_count: r.reviewCount,
-      review_last_date: r.reviewLastDate,
+      website: r.website || null,
+      gbp_place_id: r.placeId || null,
+      phone: r.phone || null,
+      review_count: r.reviewCount ?? 0,
+      review_last_date: r.reviewLastDate || null,
       last_enriched: new Date().toISOString()
     });
 
@@ -386,14 +391,21 @@ async function main() {
 
   if (DRY_RUN) {
     log('\nDRY_RUN=1 -> nothing written.');
-    if (updates[0]) log('Sample update: ' + JSON.stringify(updates[0]));
+    if (matchedUpdates[0]) log('Sample matched update: ' + JSON.stringify(matchedUpdates[0]));
+    if (touchedOnly[0]) log('Sample touch-only update: ' + JSON.stringify(touchedOnly[0]));
     if (signals[0]) log('Sample signal: ' + JSON.stringify(signals[0]));
     return;
   }
 
-  log('\nUpdating contractors...');
-  for (let i = 0; i < updates.length; i += CHUNK) {
-    await sb('POST', 'acq_contractors?on_conflict=id', updates.slice(i, i + CHUNK),
+  log('\nUpdating matched contractors...');
+  for (let i = 0; i < matchedUpdates.length; i += CHUNK) {
+    await sb('POST', 'acq_contractors?on_conflict=id', matchedUpdates.slice(i, i + CHUNK),
+      { Prefer: 'resolution=merge-duplicates,return=minimal' });
+  }
+
+  log('Touching unmatched/skipped contractors (last_enriched only)...');
+  for (let i = 0; i < touchedOnly.length; i += CHUNK) {
+    await sb('POST', 'acq_contractors?on_conflict=id', touchedOnly.slice(i, i + CHUNK),
       { Prefer: 'resolution=merge-duplicates,return=minimal' });
   }
 
@@ -406,10 +418,11 @@ async function main() {
   }
 
   log('\n===== RUN SUMMARY =====');
-  log(`  batchSize:        ${rows.length}`);
-  log(`  apiCalls:         ${apiCalls}`);
-  log(`  contractorsUpdated: ${updates.length}`);
-  log(`  signalsWritten:   ${signals.length}`);
+  log(`  batchSize:          ${rows.length}`);
+  log(`  apiCalls:           ${apiCalls}`);
+  log(`  matchedUpdated:     ${matchedUpdates.length}`);
+  log(`  unmatchedTouched:   ${touchedOnly.length}`);
+  log(`  signalsWritten:     ${signals.length}`);
   log(`  remaining universe left to enrich: run again to continue the rolling pass.`);
 }
 
