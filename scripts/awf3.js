@@ -121,7 +121,30 @@ function nameMatchScore(a, b) {
   return hits / Math.max(ta.length, 1);
 }
 
-// ---------------- Places API (New) ----------------
+// A contractor whose entity_name is a bare person's name ("DAVIS, RONALD L",
+// the DBPR convention for an individually-licensed contractor with no DBA)
+// cannot be safely searched by name alone: Places will happily return any
+// other person or business sharing that name — a doctor, a lawyer, a
+// stranger — and our token matcher will score it as a strong match, because
+// the tokens genuinely do overlap. Caught in testing: "DAVIS, RONALD L"
+// matched to a pediatric neurologist named "Ronald G. Davis," score 1.00.
+// These contractors are skipped rather than searched. This isn't a real
+// loss — an individual license with no corporate entity is already the
+// strongest standalone Strategy 1 signal (established in AWF-2), so nothing
+// downstream depends on web-footprint enrichment for this group.
+function isBarePersonName(name) {
+  const s = String(name || '').trim();
+  if (/\d/.test(s)) return false;
+  const m = s.match(/^([a-z' \-]+),\s*(.+)$/i);
+  if (!m) return false;
+  // A comma alone isn't enough — "Kendale Air Conditioning, Inc." has one too.
+  // The distinguishing check is what comes after it: a real person-name comma
+  // is followed by a first name; a corporate name is followed by a suffix.
+  const CORP_SUFFIX = new Set(['INC', 'LLC', 'CORP', 'CO', 'LTD', 'LLP', 'LP', 'PA', 'PC', 'PLLC']);
+  const afterComma = m[2].trim().toUpperCase().replace(/\./g, '');
+  const firstWordAfter = afterComma.split(/\s+/)[0];
+  return !CORP_SUFFIX.has(firstWordAfter);
+}
 async function placesTextSearch(query) {
   const res = await fetch('https://places.googleapis.com/v1/places:searchText', {
     method: 'POST',
@@ -193,6 +216,11 @@ async function main() {
   let apiCalls = 0;
 
   for (const c of rows) {
+    if (isBarePersonName(c.entity_name)) {
+      results.push({ contractor: c, skipped: 'individual_name', matched: false });
+      continue;
+    }
+
     const query = `${c.entity_name} ${c.city || ''} FL`.replace(/\s+/g, ' ').trim();
     let search;
     try {
@@ -256,6 +284,7 @@ async function main() {
     results.forEach((r, i) => {
       log(`\n[${i}] ${r.contractor.entity_name} (${r.contractor.city}, ${r.contractor.county})`);
       if (r.error) { log(`    ERROR: ${r.error}`); return; }
+      if (r.skipped) { log(`    SKIPPED (individual license, name-only search unreliable)`); return; }
       if (!r.matched) { log(`    NO MATCH (candidates seen: ${JSON.stringify(r.candidates)})`); return; }
       log(`    matched: "${r.displayName}"  (score ${r.matchScore.toFixed(2)})`);
       log(`    website: ${r.website || '(none)'}`);
@@ -279,6 +308,17 @@ async function main() {
     if (r.error) continue;
 
     if (!r.matched) {
+      if (r.skipped) {
+        // Intentionally not searched — do not write no_gbp_listing, which
+        // would misleadingly imply a search happened and found nothing.
+        updates.push({ id: cid, last_enriched: new Date().toISOString() });
+        signals.push({
+          contractor_id: cid, license_no: null, signal_type: 'individual_license_no_web_check',
+          strategy_ids: [], source: 'AWF-3',
+          payload: { reason: 'bare person name; name-only search unreliable' }
+        });
+        continue;
+      }
       counts.unmatched++;
       updates.push({ id: cid, last_enriched: new Date().toISOString() });
       signals.push({
