@@ -398,15 +398,22 @@ async function main() {
   }
 
   log('\nUpdating matched contractors...');
-  for (let i = 0; i < matchedUpdates.length; i += CHUNK) {
-    await sb('POST', 'acq_contractors?on_conflict=id', matchedUpdates.slice(i, i + CHUNK),
-      { Prefer: 'resolution=merge-duplicates,return=minimal' });
+  // PATCH, not POST-upsert: acq_contractors.id is GENERATED ALWAYS AS
+  // IDENTITY, which Postgres refuses to write to even inside an upsert's
+  // underlying INSERT — every other table in this system upserts by a
+  // natural key (license_no, document_no, match_key) and never touches the
+  // surrogate id. This script is the first one updating pre-existing rows by
+  // their own id, which is a plain UPDATE, not an upsert, so PATCH is both
+  // the fix and the semantically correct call.
+  for (const u of matchedUpdates) {
+    const { id, ...fields } = u;
+    await sb('PATCH', `acq_contractors?id=eq.${id}`, fields, { Prefer: 'return=minimal' });
   }
 
   log('Touching unmatched/skipped contractors (last_enriched only)...');
-  for (let i = 0; i < touchedOnly.length; i += CHUNK) {
-    await sb('POST', 'acq_contractors?on_conflict=id', touchedOnly.slice(i, i + CHUNK),
-      { Prefer: 'resolution=merge-duplicates,return=minimal' });
+  for (const u of touchedOnly) {
+    const { id, ...fields } = u;
+    await sb('PATCH', `acq_contractors?id=eq.${id}`, fields, { Prefer: 'return=minimal' });
   }
 
   if (signals.length) {
