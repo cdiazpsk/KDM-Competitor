@@ -18,11 +18,11 @@
  * largest single market to prove the pattern against first.
  */
 
-// Known ArcGIS item IDs for Miami-Dade permit-related datasets, gathered from
-// public search — CONFIRM, don't trust, which is the point of this script.
+// Known ArcGIS item IDs for Miami-Dade permit-related datasets.
+// The second candidate from the first exploration run (31cd319f...) returned
+// 403 Forbidden — not publicly shared the same way as the first. Dropped.
 const CANDIDATE_ITEMS = [
-  { id: '6db5f56e886446df88313ca279e59120', label: 'Building Permits Issued (2yr to present)' },
-  { id: '31cd319f45544648b59f0418aea60091', label: 'Building Permit (point layer, last 3 years)' }
+  { id: '6db5f56e886446df88313ca279e59120', label: 'Building Permits Issued (2yr to present)' }
 ];
 
 const log = (...a) => console.log(...a);
@@ -70,73 +70,93 @@ async function main() {
 
     if (!info.url) continue;
 
-    let meta;
+    // The FeatureServer URL is a CONTAINER — it can hold multiple layers
+    // and/or tables. Querying it directly (as the first version of this
+    // script did) returns a service-level document with empty fields; the
+    // real schema lives one level deeper, at {url}/{layerId}. Enumerate what
+    // the container actually holds before assuming which sub-resource to use.
+    let serviceRoot;
     try {
-      meta = await getLayerMetadata(info.url);
+      serviceRoot = await getLayerMetadata(info.url);
     } catch (e) {
-      log(`  FAILED to fetch layer metadata: ${e.message}`);
+      log(`  FAILED to fetch service root: ${e.message}`);
       continue;
     }
-    if (meta.error) {
-      log(`  Layer metadata error: ${JSON.stringify(meta.error)}`);
+    if (serviceRoot.error) {
+      log(`  Service root error: ${JSON.stringify(serviceRoot.error)}`);
       continue;
     }
-    log(`  layer name: ${meta.name}`);
-    log(`  geometry type: ${meta.geometryType || '(table, no geometry)'}`);
-    log(`  fields (${(meta.fields || []).length}):`);
-    (meta.fields || []).forEach(f => log(`    ${f.name.padEnd(28)} ${f.type}${f.alias && f.alias !== f.name ? '  ("' + f.alias + '")' : ''}`));
+    const layers = serviceRoot.layers || [];
+    const tables = serviceRoot.tables || [];
+    log(`  service contains: ${layers.length} layer(s), ${tables.length} table(s)`);
+    layers.forEach(l => log(`    layer  id=${l.id}  name="${l.name}"`));
+    tables.forEach(t => log(`    table  id=${t.id}  name="${t.name}"`));
 
-    // Record count
-    try {
-      const countRes = await queryLayer(info.url, { where: '1=1', returnCountOnly: 'true' });
-      log(`  total records: ${countRes.count ?? '(unknown)'}`);
-    } catch (e) {
-      log(`  FAILED to get record count: ${e.message}`);
+    const subResources = [...layers.map(l => ({ ...l, kind: 'layer' })), ...tables.map(t => ({ ...t, kind: 'table' }))];
+    if (subResources.length === 0) {
+      log('  No layers or tables found inside this service — nothing to inspect.');
+      continue;
     }
 
-    // Date range, if there's an obvious date field
-    const dateField = (meta.fields || []).find(f => /issue.*date|date.*issue/i.test(f.name))
-      || (meta.fields || []).find(f => /^date/i.test(f.name) || /date$/i.test(f.name));
-    if (dateField) {
+    for (const sub of subResources) {
+      const subUrl = `${info.url}/${sub.id}`;
+      log(`\n  --- ${sub.kind} ${sub.id}: "${sub.name}" ---`);
+      let meta;
       try {
-        const oldest = await queryLayer(info.url, {
-          where: '1=1', outFields: dateField.name, orderByFields: `${dateField.name} ASC`,
-          resultRecordCount: '1'
-        });
-        const newest = await queryLayer(info.url, {
-          where: '1=1', outFields: dateField.name, orderByFields: `${dateField.name} DESC`,
-          resultRecordCount: '1'
-        });
-        const fmt = (r) => {
-          const v = r?.features?.[0]?.attributes?.[dateField.name];
-          return v ? new Date(v).toISOString().slice(0, 10) : '(none)';
-        };
-        log(`  date field "${dateField.name}" range: ${fmt(oldest)} to ${fmt(newest)}`);
+        meta = await getLayerMetadata(subUrl);
       } catch (e) {
-        log(`  FAILED to get date range: ${e.message}`);
+        log(`    FAILED to fetch metadata: ${e.message}`);
+        continue;
       }
-    }
+      if (meta.error) {
+        log(`    metadata error: ${JSON.stringify(meta.error)}`);
+        continue;
+      }
+      log(`    geometry type: ${meta.geometryType || '(table, no geometry)'}`);
+      log(`    fields (${(meta.fields || []).length}):`);
+      (meta.fields || []).forEach(f => log(`      ${f.name.padEnd(28)} ${f.type}${f.alias && f.alias !== f.name ? '  ("' + f.alias + '")' : ''}`));
 
-    // Sample rows — full attribute set, so we can eyeball contractor/company
-    // name fields, permit type/classification, and address fields for real.
-    try {
-      const sample = await queryLayer(info.url, {
-        where: '1=1', outFields: '*', resultRecordCount: '3'
-      });
-      log(`  sample records:`);
-      (sample.features || []).forEach((f, i) => {
-        log(`    [${i}] ${JSON.stringify(f.attributes)}`);
-      });
-    } catch (e) {
-      log(`  FAILED to fetch sample rows: ${e.message}`);
-    }
+      try {
+        const countRes = await queryLayer(subUrl, { where: '1=1', returnCountOnly: 'true' });
+        log(`    total records: ${countRes.count ?? '(unknown)'}`);
+      } catch (e) {
+        log(`    FAILED to get record count: ${e.message}`);
+      }
 
-    // Quick check: does any field look like it holds a contractor/company name?
-    const nameFields = (meta.fields || []).filter(f =>
-      /contractor|company|business|owner|applicant|permittee/i.test(f.name) ||
-      (f.alias && /contractor|company|business|owner|applicant|permittee/i.test(f.alias))
-    );
-    log(`  candidate contractor/owner-name fields: ${nameFields.length ? nameFields.map(f => f.name).join(', ') : '(none obviously named — inspect sample records above)'}`);
+      const dateField = (meta.fields || []).find(f => /issue.*date|date.*issue/i.test(f.name))
+        || (meta.fields || []).find(f => /^date/i.test(f.name) || /date$/i.test(f.name));
+      if (dateField) {
+        try {
+          const oldest = await queryLayer(subUrl, {
+            where: '1=1', outFields: dateField.name, orderByFields: `${dateField.name} ASC`, resultRecordCount: '1'
+          });
+          const newest = await queryLayer(subUrl, {
+            where: '1=1', outFields: dateField.name, orderByFields: `${dateField.name} DESC`, resultRecordCount: '1'
+          });
+          const fmt = (r) => {
+            const v = r?.features?.[0]?.attributes?.[dateField.name];
+            return v ? new Date(v).toISOString().slice(0, 10) : '(none)';
+          };
+          log(`    date field "${dateField.name}" range: ${fmt(oldest)} to ${fmt(newest)}`);
+        } catch (e) {
+          log(`    FAILED to get date range: ${e.message}`);
+        }
+      }
+
+      try {
+        const sample = await queryLayer(subUrl, { where: '1=1', outFields: '*', resultRecordCount: '3' });
+        log(`    sample records:`);
+        (sample.features || []).forEach((f, i) => log(`      [${i}] ${JSON.stringify(f.attributes)}`));
+      } catch (e) {
+        log(`    FAILED to fetch sample rows: ${e.message}`);
+      }
+
+      const nameFields = (meta.fields || []).filter(f =>
+        /contractor|company|business|owner|applicant|permittee/i.test(f.name) ||
+        (f.alias && /contractor|company|business|owner|applicant|permittee/i.test(f.alias))
+      );
+      log(`    candidate contractor/owner-name fields: ${nameFields.length ? nameFields.map(f => f.name).join(', ') : '(none obviously named — inspect sample records above)'}`);
+    }
   }
 
   log('\n===== NEXT STEPS =====');
