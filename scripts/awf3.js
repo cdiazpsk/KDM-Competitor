@@ -192,6 +192,22 @@ function mostRecentReviewDate(reviews) {
   return dates.length ? dates[dates.length - 1].slice(0, 10) : null;
 }
 
+// Every signal object must carry the exact same key set — PostgREST's bulk
+// insert rejects a batch where objects have different shapes (PGRST102), and
+// several push sites below previously omitted license_no entirely rather
+// than setting it null, which is exactly that mismatch. One builder, one
+// shape, guaranteed.
+function makeSignal(contractorId, signalType, strategyIds, source, payload) {
+  return {
+    contractor_id: contractorId,
+    license_no: null,
+    signal_type: signalType,
+    strategy_ids: strategyIds,
+    source,
+    payload: payload || {}
+  };
+}
+
 function monthsAgo(dateStr) {
   if (!dateStr) return null;
   const d = new Date(dateStr);
@@ -318,18 +334,12 @@ async function main() {
     if (!r.matched) {
       touchedOnly.push({ id: cid, last_enriched: new Date().toISOString() });
       if (r.skipped) {
-        signals.push({
-          contractor_id: cid, license_no: null, signal_type: 'individual_license_no_web_check',
-          strategy_ids: [], source: 'AWF-3',
-          payload: { reason: 'bare person name; name-only search unreliable' }
-        });
+        signals.push(makeSignal(cid, 'individual_license_no_web_check', [], 'AWF-3',
+          { reason: 'bare person name; name-only search unreliable' }));
       } else {
         counts.unmatched++;
-        signals.push({
-          contractor_id: cid, license_no: null, signal_type: 'no_gbp_listing',
-          strategy_ids: [1, 2, 4], source: 'AWF-3',
-          payload: { query: `${r.contractor.entity_name} ${r.contractor.city}` }
-        });
+        signals.push(makeSignal(cid, 'no_gbp_listing', [1, 2, 4], 'AWF-3',
+          { query: `${r.contractor.entity_name} ${r.contractor.city}` }));
       }
       continue;
     }
@@ -347,34 +357,29 @@ async function main() {
 
     if (!r.website) {
       counts.no_website++;
-      signals.push({ contractor_id: cid, signal_type: 'no_website', strategy_ids: [1, 2],
-        source: 'AWF-3', payload: { place_id: r.placeId } });
+      signals.push(makeSignal(cid, 'no_website', [1, 2], 'AWF-3', { place_id: r.placeId }));
     } else if (r.siteAlive === false) {
       counts.site_dead++;
-      signals.push({ contractor_id: cid, signal_type: 'site_dead', strategy_ids: [1, 2, 4],
-        source: 'AWF-3', payload: { website: r.website } });
+      signals.push(makeSignal(cid, 'site_dead', [1, 2, 4], 'AWF-3', { website: r.website }));
     }
 
     if (!r.reviewCount) {
       counts.zero_reviews++;
-      signals.push({ contractor_id: cid, signal_type: 'zero_reviews', strategy_ids: [1, 2],
-        source: 'AWF-3', payload: { place_id: r.placeId } });
+      signals.push(makeSignal(cid, 'zero_reviews', [1, 2], 'AWF-3', { place_id: r.placeId }));
     } else {
       const age = monthsAgo(r.reviewLastDate);
       if (age !== null && age >= REVIEW_STALE_MONTHS) {
         counts.stale_reviews++;
-        signals.push({ contractor_id: cid, signal_type: 'reviews_stale_12mo', strategy_ids: [1, 2],
-          source: 'AWF-3', payload: { last_review: r.reviewLastDate, months_stale: age } });
+        signals.push(makeSignal(cid, 'reviews_stale_12mo', [1, 2], 'AWF-3',
+          { last_review: r.reviewLastDate, months_stale: age }));
       }
     }
 
     if (r.businessStatus === 'CLOSED_PERMANENTLY') {
       counts.closed++;
-      signals.push({ contractor_id: cid, signal_type: 'business_closed_permanently', strategy_ids: [4, 10],
-        source: 'AWF-3', payload: { place_id: r.placeId } });
+      signals.push(makeSignal(cid, 'business_closed_permanently', [4, 10], 'AWF-3', { place_id: r.placeId }));
     } else if (r.businessStatus === 'CLOSED_TEMPORARILY') {
-      signals.push({ contractor_id: cid, signal_type: 'business_closed_temporarily', strategy_ids: [4],
-        source: 'AWF-3', payload: { place_id: r.placeId } });
+      signals.push(makeSignal(cid, 'business_closed_temporarily', [4], 'AWF-3', { place_id: r.placeId }));
     }
   }
 
