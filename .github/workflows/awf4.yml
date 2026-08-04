@@ -1,0 +1,36 @@
+name: AWF-4 Miami-Dade Permit Puller
+
+on:
+  schedule:
+    # Weekly, Miami-Dade only for now (pilot county).
+    - cron: '0 12 * * 3'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'discovery'
+        type: choice
+        options:
+          - discovery
+          - dry_run
+          - live
+
+jobs:
+  miami-dade-permits:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Show mode
+        run: echo "mode=${{ github.event.inputs.mode || 'scheduled-live' }}"
+      - name: Run AWF-4
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DISCOVERY: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'discovery') && '1' || '0' }}
+          DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'dry_run') && '1' || '0' }}
+        run: node scripts/awf4.js
